@@ -1,4 +1,4 @@
 create 'traffic','incident','weather','pollution'
 alter 'traffic', {NAME => 'incident', TTL => 86400}
 alter 'traffic', {NAME => 'weather', TTL => 86400}
-alter 'traffic', {NAME => 'poluttion', TTL => 86400}
+alter 'traffic', {NAME => 'pollution', TTL => 86400}
