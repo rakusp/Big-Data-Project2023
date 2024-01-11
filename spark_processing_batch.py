@@ -2,10 +2,9 @@ import sys
 import logging
 from pyspark import SparkContext, SparkConf
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import udf, col, explode, concat, lit, isnan
-from pyspark.sql.types import StringType, BooleanType
+from pyspark.sql.functions import udf, col, lit, isnan, round, to_timestamp
+from pyspark.sql.types import StringType, DateType
 from datetime import datetime, timedelta
-import numpy as np
 
 #configure logger
 formatter = logging.Formatter('[%(asctime)s]%(levelname)s @ line %(lineno)d: %(message)s')
@@ -25,11 +24,6 @@ def round_to_half_hour(timestamp):
     # in this project, half hour is half past some hour, e.g. 8:30
     date = datetime.fromtimestamp(timestamp)
     return datetime(date.year, date.month, date.day, date.hour, 30, 0)
-
-
-def check_if_time_valid(time_string, start_time, end_time):
-    time = datetime.strptime(time_string, '%Y-%m-%d %H:%M:%S')
-    return start_time <= time <= end_time
 
 
 def map_categories(mapping):
@@ -64,8 +58,10 @@ def get_weather_and_pollution_data(cities=None, start_time=None, end_time=None):
     if cities is not None:
         df_merged = df_merged.filter(df_merged.city.isin(cities))
     if start_time is not None and end_time is not None:
-        merged_udf = udf(lambda x: check_if_time_valid(x, start_time, end_time), BooleanType())
-        df_merged = df_merged.filter(merged_udf(col("time")))
+        merged_udf = udf(lambda x: datetime.strptime(x, '%Y-%m-%d %H:%M:%S'), DateType())
+        df_merged = df_merged.withColumn("time", to_timestamp(df_merged.time, 'yyyy-MM-dd HH:mm:ss'))
+        df_merged = df_merged.filter((start_time <= col("time")) & (end_time >= col("time")))
+    df_merged = df_merged.sort(col("city"), col("time"))
     df_merged.createOrReplaceTempView("WeatherAndPollutionData")
     logger.info("Done")
     return df_merged
@@ -85,7 +81,8 @@ def get_sum_of_incidents_for_categories(start_time=None, end_time=None, cities=N
     # do not count the same incident more than once:
     df_incidents = df_incidents.dropDuplicates(['id'])
     df_incidents = df_incidents.groupBy("city", "iconCat").count()
-    df_incidents.show()
+    df_incidents = df_incidents.sort(col("city"), col("iconCat"))
+    df_incidents = df_incidents.withColumnRenamed("iconCat", "category")
     df_incidents.createOrReplaceTempView("SumOfIncidentsForCategories")
     logger.info("Done")
     return df_incidents
@@ -112,7 +109,10 @@ def get_daily_weather_data(columns_list, cities=None, start_time=None, end_time=
         df_weather = df_weather.groupBy(["city", "day"]).avg()
     if type == 'max':
         df_weather = df_weather.groupBy(["city", "day"]).max()
-    df_weather.show()
+    for col_name in df_weather.columns:
+        if col_name not in ["city", "day"]:
+            df_weather = df_weather.withColumn(col_name, round(col(col_name), 3))
+    df_weather = df_weather.sort(col("city"),col("day"))
     df_weather.createOrReplaceTempView("DailyWeatherData")
     logger.info("Done")
     return df_weather
@@ -138,23 +138,12 @@ def get_daily_pollution_data(columns_list, cities=None, start_time=None, end_tim
         df_pollution = df_pollution.groupBy(["city", "day"]).avg()
     if type == 'max':
         df_pollution = df_pollution.groupBy(["city", "day"]).max()
-    df_pollution.show()
+    for col_name in df_pollution.columns:
+        if col_name not in ["city", "day"]:
+            df_pollution = df_pollution.withColumn(col_name, round(col(col_name), 3))
+    df_pollution = df_pollution.sort(col("city"),col("day"))
     df_pollution.createOrReplaceTempView("DailyPollutionData")
     logger.info("Done")
     return df_pollution
 
-
-if __name__ == "__main__":
-    spark = SparkSession.builder.appName("SparkDataProcessing").getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
-    logger.info("Starting application...")
-    # some test data and function calling:
-    start_time = datetime(2023, 12, 28, 8, 30, 0)
-    end_time = datetime(2023, 12, 30, 14, 31, 0)
-    get_weather_and_pollution_data(["Warsaw", "Cairo"], start_time, end_time)
-    get_sum_of_incidents_for_categories(start_time, end_time, ["Warsaw", "London", "Zagreb"])
-    get_daily_weather_data(["rain", "snowfall"], ["Warsaw", "Cairo"], start_time, end_time)
-    get_daily_weather_data(columns_list=["temperature_2m", "windspeed_10m"], cities=["London", "New Delhi"], type='mean')
-    get_daily_pollution_data(["aqi", "co", "pm2_5"], ["New Delhi", "Warsaw"], start_time, end_time)
-    get_daily_pollution_data(["aqi", "co", "pm2_5"], ["New Delhi", "Warsaw", "Brussels"])
 
